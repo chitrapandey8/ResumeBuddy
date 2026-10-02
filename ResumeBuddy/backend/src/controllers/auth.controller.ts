@@ -1,0 +1,152 @@
+import type { Request, Response } from "express";
+import userSchema, { UserModel } from "../models/user.schema.js";
+import bcrypt from 'bcrypt'
+import jwt from 'jsonwebtoken'
+import { redisClient } from "../db/redisClient.js";
+
+export const Signup = async (req:Request,res:Response) => {
+  try {
+    const {username,email,password} = req.body 
+
+    //Check User Already present
+    const isPresent = await userSchema.findOne({
+      $or:[{email:email},{username:username}]
+    })
+    if (isPresent) {
+      return res.status(411).json({
+        message:`User Already present`
+      })
+    }else{
+      //Hash The Password
+      const salt = await bcrypt.genSalt()
+      const HashPassword = await bcrypt.hash(password,salt)
+
+      const user = await userSchema.create({
+        username:username,
+        password:HashPassword,
+        email:email
+      })
+
+      
+      const token = jwt.sign(
+        {id:user._id,username:username},
+        process.env.JWT_SECRET as string,
+        {expiresIn:"1d"}
+      )
+      
+      //Create A Token
+
+      res.cookie("token", token, {
+  httpOnly: true,
+  secure: true,       
+  sameSite: "none",  
+});
+
+      return res.status(200).json({
+        message:`User Created Successfully`,
+        user:user
+      })
+
+    }
+  } catch (error) {
+    return res.status(500).json({
+      message:`Internal Server Error`
+    })
+  }
+}
+
+export const Signin = async (req:Request,res:Response) => {
+  try {
+    const {username,password} = req.body 
+
+    //Check User Already present
+    
+    const isPresent = await userSchema.findOne({username:username}).select('+password')
+    if (isPresent) {
+      //Check the password
+      const isMatched = await bcrypt.compare(password,isPresent.password)
+      
+      if (isMatched) {
+        const token = jwt.sign(
+          {id:isPresent._id,username:username},
+          process.env.JWT_SECRET as string,
+          {expiresIn:"1d"}
+        )
+        
+        
+        //Create A Token
+        res.cookie("token", token, {
+  httpOnly: true,
+  secure: true,       
+  sameSite: "none",   
+});
+
+        return res.status(200).json({
+          message:`User Login`,
+          user:{
+            id:isPresent._id,
+            username:isPresent.username,
+            email:isPresent.email
+          }
+        })
+        
+      }else{
+        return res.status(400).json({
+          message:`Invalid email and password`
+        })
+      }
+    }else{
+      return res.status(400).json({
+        message:`User Not Present`
+      })
+    }
+  } catch (error) {
+    return res.status(500).json({
+      message:`Internal Server Error`
+    })
+  }
+}
+
+
+export const Logout = async (req: Request, res: Response) => {
+  try {
+    const token = req.cookies.token;
+
+    if (token) {
+      const decoded = jwt.decode(token) as { exp: number };
+
+      if (decoded && decoded.exp) {
+        const now = Math.floor(Date.now() / 1000);
+        const remainingTime = decoded.exp - now;
+
+        if (remainingTime > 0) {
+          await redisClient.setEx(`bl_${token}`, remainingTime, "true");
+        }
+      }
+    }
+
+    res.clearCookie("token", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+    });
+
+    return res.status(200).json({ message: "Logged out successfully" });
+  } catch (error) {
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+export const getMe = async (req:Request,res:Response) => {
+  try {
+    //Get The User Details
+    const id = req.userId!
+    let user = await userSchema.findById(id)
+    return res.status(200).json({
+      user:user
+    })
+  } catch (error) {
+    return res.status(500).json({
+      message:`Internal Server Error`
+    })
+  }
+}
